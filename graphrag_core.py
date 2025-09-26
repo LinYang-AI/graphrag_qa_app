@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import logging
 import time
+from document_processor import AdvancedDocumentProcessor, DocumentChunk, DocumentMetadata
 
 # Updated imports with error handling
 try:
@@ -52,6 +53,7 @@ class GraphRAGSystem:
         self.embeddings_model = None
         self.nlp = None
         self.initialized = False
+        self.document_processor = AdvancedDocumentProcessor()
         
     async def initialize(self):
         """Initialize all components with proper error handling"""
@@ -199,6 +201,162 @@ class GraphRAGSystem:
         
         logger.info(f"✅ Processed {files_processed} files from {path}")
 
+    async def ingest_document_advanced(self, file_path: str, tenant_id: str = "default",
+                              chunk_strategy: str="paragraph"):
+        """Advanced document ingestion with rich metadata and smart chunking"""
+        try:
+            logger.info(f"📄 Ingesting document: {Path(file_path).name}")
+            
+            # Use the AdvancedDocumentProcessor to handle extraction and chunking
+            metadata, chunks = await self.document_processor.process_document(
+                file_path, tenant_id, chunk_strategy
+            )
+            
+            if not chunks:
+                logger.warning(f"No chunks created from {file_path}")
+                return
+            
+            # Store document metadata and chunks in graph
+            await self._store_document_advanced(metadata, chunks)
+            
+            # Create embeddings for all chunks
+            await self._create_embeddings_advanced(chunks)
+            
+            logger.info(f"✅ Advanced processing complete: {metadata.title} ({len(chunks)} chunks)")
+        
+        except Exception as e:
+            logger.error(f"❌ Error in advanced processing {file_path}: {e}")
+            raise
+    
+    async def _store_document_advanced(self, metadata: DocumentMetadata, chunks: List[DocumentChunk]):
+        """Store document and chunks with rich metadata in Neo4j"""
+        try:
+            async with self.neo4j_driver.session() as session:
+                # Create document node with rich metadata
+                doc_props = metadata.to_dict()
+                await session.run(
+                    """
+                    MERGE (d:Document {hash: $hash})
+                    SET d += $props,
+                        d.processed_at = datetime(),
+                        d.chunk_count = $chunk_count
+                    """, hash=metadata.document_hash, props=doc_props, chunk_count=len(chunks)
+                )
+                
+                # Create chunk nodes with enhanced metadata
+                for chunk in chunks:
+                    chunk_data = chunk.to_dict()
+                    await session.run(
+                        """
+                        MATCH (d:Document {hash: $doc_hash})
+                        MERGE (c:Chunk {id: $chunk_id})
+                        SET c += $chunk_props,
+                            c.created_at = datetime()
+                        MERGE (d)-[:CONTAINS {index: $chunk_index}]->(c)
+                        """,
+                        doc_hash=metadata.document_hash,
+                        chunk_id=chunk.chunk_id,
+                        chunk_props=chunk_data,
+                        chunk_index=chunk.chunk_index
+                    )
+                    
+                    # Extract and link entities (if spaCy is available)
+                    if self.nlp and hasattr(self.nlp, 'pipe'):
+                        await self._extract_entities_advanced(chunk)
+        
+        except Exception as e:
+            logger.error(f"Error storing advanced document data: {e}")
+            raise
+    
+    async def _extract_entities_advanced(self, chunk: DocumentChunk):
+        """Advanced entity extraction with more context"""
+        try:
+            doc = self.nlp(chunk.content[:2000]) # Limit text length for performance
+            
+            async with self.neo4j_driver.session() as session:
+                for ent in doc.ents:
+                    if ent.label_ in ["PERSON", "ORG", "GPE", "EVENT", "MONEY", "PRODUCT", "DATE"]:
+                        # Create entity with more metadata
+                        await session.run(
+                            """
+                            MATCH (c:Chunk {id: $chunk_id})
+                            MERGE (e:Entity {name: $name, type: $ent_type})
+                            SET e.normalized_name = toLower($name),
+                                e.confidence = $confidence
+                            MERGE (c)-[:MENTIONS]->(e)
+                            SET r.start_char = $start,
+                                r.end_char = $end,
+                                r.context = $context
+                            """,
+                            chunk_id=chunk.chunk_id,
+                            name=ent.text.strip(),
+                            ent_type=ent.label_,
+                            confidence=1.0, # Could be enhanced with confidence scoring
+                            start=ent.start_char,
+                            end=ent.end_char,
+                            context=chunk.content[max(0, ent.start_char-50):ent.end_char+50]
+                        )
+        
+        except Exception as e:
+            logger.warning(f"Entity extraction failed for chunk {chunk.chunk_id}: {e}")
+    
+    async def _create_embeddings_advanced(self, chunks: List[DocumentChunk]):
+        """Create embeddings with enhanced metadata"""
+        try:
+            for chunk in chunks:
+                # Generate embedding
+                embedding = self.embeddings_model.encode(chunk.content).tolist()
+                
+                # Prepare enhanced metadata for vector storage
+                vector_metadata = {
+                    "content": chunk.content,
+                    "chunk_id": chunk.chunk_id,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_type": chunk.chunk_type,
+                    "section_title": chunk.section_title,
+                    "word_count": chunk.word_count,
+                    "document_title": chunk.metadata.title,
+                    "document_author": chunk.metadata.author,
+                    "file_type": chunk.metadata.file_type,
+                    "tenant_id": chunk.metadata.tenant_id,
+                    "document_hash": chunk.metadata.document_hash,
+                }
+                
+                # Store in Weaviate
+                self.weaviate_client.data_object.create(
+                    vector_metadata,
+                    "DocumentChunk",
+                    vector=embedding
+                )
+        except Exception as e:
+            logger.error(f"Error creating advanced embeddings: {e}")
+            raise
+    
+    # Batch processing method
+    async def ingest_batch(self, file_paths: List[str], tenant_id: str="default",
+                           chunk_strategy: str="paragraph") -> Dict[str, Any]:
+        """Process multiple documents in batch"""
+        logger.info(f"📦 Starting batch processing of {len(file_paths)} files")
+        
+        batch_results = await self.document_processor.process_batch(
+            file_paths, tenant_id, chunk_strategy
+        )
+        
+        # Store all successful documents
+        for doc_info in batch_results["documents"]:
+            file_path = doc_info["file_path"]
+            try:
+                await self.ingest_document_advanced(file_path, tenant_id, chunk_strategy)
+            except Exception as e:
+                logger.error(f"❌ Failed to process {file_path} in batch: {e}")
+                batch_results["failed"] += 1
+                batch_results["processed"] -= 1
+                
+        logger.info(f"✅ Batch processing complete: {batch_results['processed']} succeeded, {batch_results['failed']} failed")
+        
+        return batch_results
+        
+        
     async def ingest_document(self, file_path: str):
         """Ingest a single document with comprehensive error handling"""
         try:
