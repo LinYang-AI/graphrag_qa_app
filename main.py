@@ -31,23 +31,28 @@ graphrag = GraphRAGSystem()
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the GraphRAG system and process sample documents"""
+    """Initialize the GraphRAG system"""
     try:
         logger.info("🚀 Starting GraphRAG system...")
+        
+        # Add startup delay to let dependencies initialize
+        import asyncio
+        await asyncio.sleep(5)  # Wait 5 seconds for Neo4j to be ready
+        
         await graphrag.initialize()
-
+        
         # Process sample documents on startup
         sample_docs_path = Path("/app/sample_docs")
         if sample_docs_path.exists():
             logger.info("📚 Processing sample documents...")
             await graphrag.ingest_directory(str(sample_docs_path))
             logger.info("✅ Sample documents processed")
-        else:
-            logger.info("⚠️  No sample documents directory found")
-
+        
+        logger.info("✅ GraphRAG system started successfully")
+        
     except Exception as e:
         logger.error(f"❌ Startup error: {e}")
-        # Remove raise - keep the app start anyway for debugging
+        # Don't raise - let the app start anyway for debugging
 
 
 @app.get("/")

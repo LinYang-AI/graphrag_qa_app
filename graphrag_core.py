@@ -90,33 +90,59 @@ class GraphRAGSystem:
         self.initialized = True
         logger.info("✅ GraphRAG system initialized successfully")
 
-    async def _init_neo4j(self, max_retries=5):
-        """Initialize Neo4j with retry logic"""
+    async def _init_neo4j(self, max_retries=10):
+        """Initialize Neo4j with better retry logic and health checks"""
+        import asyncio
+        
         for attempt in range(max_retries):
             try:
-                logger.info(
-                    f"Attempting to connect to Neo4j (attempt {attempt + 1}/{max_retries})"
-                )
+                logger.info(f"Attempting to connect to Neo4j (attempt {attempt + 1}/{max_retries})")
+                
+                # Wait a bit for Neo4j to be ready
+                if attempt > 0:
+                    wait_time = min(2 ** attempt, 30)  # Exponential backoff with max 30s
+                    logger.info(f"Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                
                 self.neo4j_driver = AsyncGraphDatabase.driver(
-                    "bolt://neo4j:7687", auth=("neo4j", "password123")
+                    "bolt://neo4j:7687",
+                    auth=("neo4j", "password123"),
+                    max_connection_lifetime=3600,
+                    max_connection_pool_size=50,
+                    connection_acquisition_timeout=60
                 )
-
-                # Test connection
-                async with self.neo4j_driver.session() as session:
-                    await session.run("RETURN 1")
-
-                logger.info("✅ Neo4j connected successfully")
-                self.graph_builder = AdvancedGraphBuilder(self.neo4j_driver, self.nlp)
-                return
-
+                
+                # Test connection with timeout
+                async with asyncio.timeout(30):  # 30 second timeout
+                    async with self.neo4j_driver.session() as session:
+                        result = await session.run("RETURN 1 as test")
+                        test_record = await result.single()
+                        if test_record and test_record["test"] == 1:
+                            logger.info("✅ Neo4j connected successfully")
+                            
+                            # Initialize graph builder after successful connection
+                            from graph_builder import AdvancedGraphBuilder
+                            self.graph_builder = AdvancedGraphBuilder(self.neo4j_driver, self.nlp)
+                            logger.info("✅ Graph builder initialized")
+                            return
+                        else:
+                            raise Exception("Neo4j test query failed")
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"Neo4j connection attempt {attempt + 1} timed out")
             except Exception as e:
                 logger.warning(f"Neo4j connection attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)  # Exponential backoff
-                else:
-                    raise Exception(
-                        f"Failed to connect to Neo4j after {max_retries} attempts"
-                    )
+                
+                # Close driver if it was created but connection failed
+                if self.neo4j_driver:
+                    try:
+                        await self.neo4j_driver.close()
+                    except:
+                        pass
+                    self.neo4j_driver = None
+            
+            if attempt == max_retries - 1:
+                raise Exception(f"Failed to connect to Neo4j after {max_retries} attempts")
 
     async def _init_weaviate(self, max_retries=5):
         """Initialize Weaviate with retry logic"""
