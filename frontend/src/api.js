@@ -64,6 +64,7 @@ export const api = {
   getGraphOverview: () => apiClient.get('/graph/overview'),
   getEntityGraph: (entityName, maxDepth = 2) => 
     apiClient.get(`/graph/entity/${encodeURIComponent(entityName)}?max_depth=${maxDepth}`),
+  post: (endpoint, data) => apiClient.post(endpoint, data), // Add this line
   uploadDocument: (file, tenantId = 'default') => {
     const formData = new FormData();
     formData.append('file', file);
