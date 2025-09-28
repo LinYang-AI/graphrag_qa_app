@@ -37,42 +37,84 @@ const GraphWidget = () => {
       const cytoscapeInstance = cytoscape({
         container: cyRef.current,
         
+        // Improved zoom and interaction settings
+        wheelSensitivity: 0.3, // Faster zoom
+        minZoom: 0.1,
+        maxZoom: 3,
+        
         style: [
           {
             selector: 'node',
             style: {
               'background-color': (ele) => entityColors[ele.data('type')] || entityColors.default,
               'label': (ele) => widgetSettings.showLabels ? ele.data('label') : '',
-              'color': '#FFFFFF',
+              'color': '#1F2937', // Dark gray text instead of white
               'text-valign': 'center',
               'text-halign': 'center',
               'font-size': '10px',
               'font-weight': 'bold',
-              'width': '20px',
-              'height': '20px',
-              'border-width': 1,
+              'font-family': 'system-ui, -apple-system, sans-serif',
+              'width': '24px',
+              'height': '24px',
+              'border-width': 2,
               'border-color': '#FFFFFF',
-              'text-max-width': '60px',
-              'text-wrap': 'wrap'
+              'text-max-width': '80px',
+              'text-wrap': 'wrap',
+              'text-background-color': '#FFFFFF', // White background for text
+              'text-background-opacity': 0.8,
+              'text-background-padding': '2px',
+              'text-border-width': 1,
+              'text-border-color': '#E5E7EB',
+              'text-border-opacity': 0.5
             }
           },
           {
             selector: 'node:selected',
             style: {
-              'border-width': 2,
-              'border-color': '#FCD34D'
+              'border-width': 3,
+              'border-color': '#FCD34D',
+              'text-background-color': '#FEF3C7'
+            }
+          },
+          {
+            selector: 'node:hover',
+            style: {
+              'border-width': 3,
+              'border-color': '#93C5FD'
             }
           },
           {
             selector: 'edge',
             style: {
-              'width': 1,
+              'width': 2,
               'line-color': '#9CA3AF',
               'target-arrow-color': '#9CA3AF',
               'target-arrow-shape': 'triangle',
-              'target-arrow-size': '6px',
+              'target-arrow-size': '8px',
               'curve-style': 'haystack',
-              'opacity': 0.6
+              'opacity': 0.7,
+              'label': (ele) => ele.data('relationship') === 'CO_MENTIONED' ? '' : ele.data('relationship'),
+              'font-size': '8px',
+              'color': '#374151',
+              'text-background-color': '#FFFFFF',
+              'text-background-opacity': 0.9,
+              'text-background-padding': '1px'
+            }
+          },
+          {
+            selector: 'edge:hover',
+            style: {
+              'width': 3,
+              'opacity': 1,
+              'line-color': '#6B7280'
+            }
+          },
+          {
+            selector: 'edge:selected',
+            style: {
+              'line-color': '#FCD34D',
+              'width': 3,
+              'opacity': 1
             }
           }
         ],
@@ -80,7 +122,7 @@ const GraphWidget = () => {
         layout: {
           name: widgetSettings.layoutType,
           directed: true,
-          padding: 10
+          padding: 15
         }
       });
 
@@ -191,12 +233,14 @@ const GraphWidget = () => {
         console.log(`Added ${validEdges.length} valid edges of ${graphData.edges.length} total`);
       }
       
-      // Apply layout
+      // Apply layout with better animation settings
       cy.layout({
         name: widgetSettings.layoutType,
         directed: true,
-        padding: 10,
-        animate: false
+        padding: 15,
+        animate: true,
+        animationDuration: 300, // Faster animation
+        fit: true
       }).run();
 
     } catch (error) {
@@ -213,6 +257,21 @@ const GraphWidget = () => {
 
   const handleRefreshGraph = () => {
     loadGraphData();
+  };
+
+  // Add zoom controls
+  const zoomIn = () => {
+    if (cy) {
+      cy.zoom(cy.zoom() * 1.5);
+      cy.center();
+    }
+  };
+
+  const zoomOut = () => {
+    if (cy) {
+      cy.zoom(cy.zoom() * 0.67);
+      cy.center();
+    }
   };
 
   return (
@@ -295,6 +354,7 @@ const GraphWidget = () => {
                   <option value="dagre">Hierarchical</option>
                   <option value="circle">Circle</option>
                   <option value="grid">Grid</option>
+                  <option value="cose">Force-directed</option>
                 </select>
               </div>
 
@@ -323,6 +383,24 @@ const GraphWidget = () => {
           className="w-full h-full"
           style={{ background: '#f8fafc' }}
         />
+
+        {/* Zoom Controls */}
+        <div className="absolute top-2 right-2 flex flex-col gap-1">
+          <button
+            onClick={zoomIn}
+            className="w-8 h-8 bg-white border rounded shadow hover:bg-gray-50 flex items-center justify-center text-gray-600"
+            title="Zoom In"
+          >
+            +
+          </button>
+          <button
+            onClick={zoomOut}
+            className="w-8 h-8 bg-white border rounded shadow hover:bg-gray-50 flex items-center justify-center text-gray-600"
+            title="Zoom Out"
+          >
+            −
+          </button>
+        </div>
 
         {/* Graph Stats */}
         <div className="absolute bottom-2 left-2 bg-white bg-opacity-90 px-2 py-1 rounded text-xs">
