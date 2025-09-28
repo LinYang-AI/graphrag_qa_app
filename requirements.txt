@@ -17,3 +17,6 @@ markdown==3.7
 python-magic==0.4.27
 pillow==10.4.0
 aiofiles==24.1.0
+jwt==1.4.0
+bcrypt==5.0.0
+sqlparse==0.5.3
