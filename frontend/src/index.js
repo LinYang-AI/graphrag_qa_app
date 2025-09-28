@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import GraphVisualization from './GraphVisualization';
+import App from './App';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<GraphVisualization />);
+root.render(<App />);
