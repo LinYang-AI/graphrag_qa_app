@@ -162,7 +162,8 @@ const GraphVisualization = () => {
   const [filters, setFilters] = useState({
     entityTypes: ['PERSON', 'ORG', 'GPE', 'MONEY'],
     minConfidence: 0.3,
-    maxNodes: 50
+    maxNodes: 50,
+    showAnimations: true
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -181,9 +182,116 @@ const GraphVisualization = () => {
     default: '#6B7280'  // Gray
   };
 
-  // Memoize the update graph function to fix dependency issues
+  // Initialize Cytoscape with performance optimizations
+  useEffect(() => {
+    if (cyRef.current && !cy) {
+      const cytoscapeInstance = cytoscape({
+        container: cyRef.current,
+        
+        // Performance settings
+        pixelRatio: 'auto',
+        motionBlur: false,
+        textureOnViewport: true,
+        wheelSensitivity: 0.1,
+        
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'background-color': (ele) => entityColors[ele.data('type')] || entityColors.default,
+              'label': 'data(label)',
+              'color': '#FFFFFF',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'font-size': '11px',
+              'font-weight': 'bold',
+              'width': (ele) => Math.min(60, Math.max(25, (ele.data('mentions') || 1) * 8)),
+              'height': (ele) => Math.min(60, Math.max(25, (ele.data('mentions') || 1) * 8)),
+              'border-width': 1,
+              'border-color': '#FFFFFF',
+              'text-wrap': 'wrap',
+              'text-max-width': '80px',
+              'text-overflow-wrap': 'anywhere'
+            }
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              'border-width': 3,
+              'border-color': '#FCD34D'
+            }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': (ele) => Math.max(1, (ele.data('confidence') || 0.5) * 4),
+              'line-color': (ele) => {
+                const relType = ele.data('relationship');
+                if (relType === 'WORKS_FOR') return '#3B82F6';
+                if (relType === 'FOUNDED') return '#10B981';
+                if (relType === 'PARTNERS_WITH') return '#F59E0B';
+                if (relType === 'CO_MENTIONED') return '#D1D5DB';
+                return '#6B7280';
+              },
+              'target-arrow-color': (ele) => ele.style('line-color'),
+              'target-arrow-shape': 'triangle',
+              'target-arrow-size': '8px',
+              'curve-style': 'haystack',
+              'haystack-radius': 0.3,
+              'opacity': 0.7,
+              'label': (ele) => ele.data('relationship') === 'CO_MENTIONED' ? '' : ele.data('relationship'),
+              'font-size': '9px',
+              'text-rotation': 'autorotate',
+              'text-margin-y': -8,
+              'color': '#4B5563'
+            }
+          },
+          {
+            selector: 'edge:selected',
+            style: {
+              'line-color': '#FCD34D',
+              'width': 3,
+              'opacity': 1
+            }
+          }
+        ]
+      });
+
+      // Optimized event handlers with throttling
+      let nodeClickTimeout;
+      cytoscapeInstance.on('tap', 'node', (evt) => {
+        const node = evt.target;
+        const entityName = node.data('id');
+        
+        // Throttle rapid clicks
+        clearTimeout(nodeClickTimeout);
+        nodeClickTimeout = setTimeout(() => {
+          handleNodeClick(entityName);
+        }, 200);
+      });
+
+      cytoscapeInstance.on('tap', 'edge', (evt) => {
+        const edge = evt.target;
+        console.log('Edge clicked:', edge.data());
+      });
+
+      // Disable some expensive features for better performance
+      cytoscapeInstance.autoungrabify(false);
+      cytoscapeInstance.autounselectify(false);
+
+      setCy(cytoscapeInstance);
+    }
+
+    return () => {
+      if (cy) {
+        cy.destroy();
+      }
+    };
+  }, []);
+
+  // Memoize the update graph function
   const updateGraph = useCallback(() => {
-    if (!cy) return;
+    if (!cy || isLoading) return;
 
     console.log('Updating graph with data:', graphData);
 
@@ -204,20 +312,57 @@ const GraphVisualization = () => {
     console.log('Filtered nodes:', filteredNodes.length);
     console.log('Filtered edges:', filteredEdges.length);
 
-    // Update graph
-    cy.elements().remove();
-    cy.add([...filteredNodes, ...filteredEdges]);
-    
-    // Apply layout
-    cy.layout({
-      name: 'cose-bilkent',
-      animate: true,
-      animationDuration: 1000
-    }).run();
-  }, [cy, graphData, filters, searchTerm]);
+    // Performance optimization: limit nodes for large graphs
+    const maxNodes = filters.maxNodes;
+    const nodesToShow = filteredNodes.slice(0, maxNodes);
+    const edgesToShow = filteredEdges.filter(edge =>
+      nodesToShow.some(n => n.data.id === edge.data.source) &&
+      nodesToShow.some(n => n.data.id === edge.data.target)
+    );
 
-  // Memoize loadGraphOverview to fix dependency issues
-  const loadGraphOverview = async () => {
+    if (filteredNodes.length > maxNodes) {
+      console.warn(`Showing ${maxNodes} of ${filteredNodes.length} nodes for performance`);
+    }
+
+    // Update graph efficiently
+    try {
+      cy.elements().remove();
+      cy.add([...nodesToShow, ...edgesToShow]);
+      
+      // Choose layout based on graph size and user preference
+      const layoutName = nodesToShow.length > 50 ? 'grid' : 'cose-bilkent';
+      const layoutOptions = {
+        name: layoutName,
+        animate: filters.showAnimations && nodesToShow.length < 50,
+        animationDuration: 500,
+        fit: true,
+        padding: 20
+      };
+
+      if (layoutName === 'cose-bilkent') {
+        layoutOptions.nodeRepulsion = 4500;
+        layoutOptions.idealEdgeLength = 100;
+        layoutOptions.edgeElasticity = 0.45;
+        layoutOptions.randomize = false;
+      }
+
+      cy.layout(layoutOptions).run();
+      
+      // Update info message if nodes were limited
+      if (filteredNodes.length > maxNodes) {
+        setError(`Showing ${maxNodes} of ${filteredNodes.length} nodes. Use filters to narrow down results.`);
+      } else if (error && error.includes('Showing')) {
+        setError(null);
+      }
+
+    } catch (err) {
+      console.error('Error updating graph:', err);
+      setError('Failed to update graph visualization');
+    }
+  }, [cy, graphData, filters, searchTerm, isLoading, error]);
+
+  // Memoize loadGraphOverview
+  const loadGraphOverview = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     
@@ -244,168 +389,26 @@ const GraphVisualization = () => {
           await buildGraphFromEntities(entitiesData.entities);
         } else {
           setError('No entities found. Please upload some documents first.');
+          setIsLoading(false);
         }
       } else {
         setError(`Graph overview failed: ${data.message || 'Unknown error'}`);
+        setIsLoading(false);
       }
     } catch (error) {
       console.error('Error loading graph overview:', error);
       setError(`Failed to load graph: ${error.message}`);
       setApiConnected(false);
-    } finally {
       setIsLoading(false);
     }
-  };
-
-  // Initialize Cytoscape
-  useEffect(() => {
-    if (cyRef.current && !cy) {
-      const cytoscapeInstance = cytoscape({
-        container: cyRef.current,
-        style: [
-          {
-            selector: 'node',
-            style: {
-              'background-color': (ele) => entityColors[ele.data('type')] || entityColors.default,
-              'label': 'data(label)',
-              'color': '#FFFFFF',
-              'text-valign': 'center',
-              'text-halign': 'center',
-              'font-size': '12px',
-              'font-weight': 'bold',
-              'width': (ele) => Math.max(30, (ele.data('mentions') || 1) * 10),
-              'height': (ele) => Math.max(30, (ele.data('mentions') || 1) * 10),
-              'border-width': 2,
-              'border-color': '#FFFFFF',
-              'text-wrap': 'wrap',
-              'text-max-width': '100px'
-            }
-          },
-          {
-            selector: 'node:selected',
-            style: {
-              'border-width': 4,
-              'border-color': '#FCD34D'
-            }
-          },
-          {
-            selector: 'edge',
-            style: {
-              'width': (ele) => Math.max(2, (ele.data('confidence') || 0.5) * 5),
-              'line-color': (ele) => {
-                const relType = ele.data('relationship');
-                if (relType === 'WORKS_FOR') return '#3B82F6';
-                if (relType === 'FOUNDED') return '#10B981';
-                if (relType === 'PARTNERS_WITH') return '#F59E0B';
-                if (relType === 'CO_MENTIONED') return '#D1D5DB';
-                return '#6B7280';
-              },
-              'target-arrow-color': '#6B7280',
-              'target-arrow-shape': 'triangle',
-              'curve-style': 'bezier',
-              'label': 'data(relationship)',
-              'font-size': '10px',
-              'text-rotation': 'autorotate',
-              'text-margin-y': -10
-            }
-          },
-          {
-            selector: 'edge:selected',
-            style: {
-              'line-color': '#FCD34D',
-              'width': 4
-            }
-          }
-        ],
-        layout: {
-          name: 'cose-bilkent',
-          animate: true,
-          animationDuration: 1000,
-          nodeRepulsion: 4500,
-          idealEdgeLength: 100,
-          edgeElasticity: 0.45
-        }
-      });
-
-      // Event handlers
-      cytoscapeInstance.on('tap', 'node', (evt) => {
-        const node = evt.target;
-        const entityName = node.data('id');
-        handleNodeClick(entityName);
-      });
-
-      cytoscapeInstance.on('tap', 'edge', (evt) => {
-        const edge = evt.target;
-        console.log('Edge clicked:', edge.data());
-      });
-
-      setCy(cytoscapeInstance);
-    }
-
-    return () => {
-      if (cy) {
-        cy.destroy();
-      }
-    };
-  }, []); // Empty dependency array is correct here
-
-  // Load initial graph data
-  useEffect(() => {
-    loadGraphOverview();
-  }, [loadGraphOverview]);
-
-  // Update graph when data changes
-  useEffect(() => {
-    if (cy && graphData.nodes.length > 0) {
-      updateGraph();
-    }
-  }, [cy, graphData, updateGraph]);
-
-  // const loadGraphOverview = async () => {
-  //   setIsLoading(true);
-  //   setError(null);
-    
-  //   try {
-  //     console.log('Loading graph overview...');
-      
-  //     // Test API connection first
-  //     const healthData = await api.health();
-  //     console.log('Health check response:', healthData);
-  //     setApiConnected(true);
-      
-  //     const data = await api.getGraphOverview();
-  //     console.log('Graph overview response:', data);
-      
-  //     if (data.status === 'success') {
-  //       setGraphStats(data.graph_stats);
-        
-  //       // Load entities for the overview graph
-  //       console.log('Loading entities...');
-  //       const entitiesData = await api.getEntities(filters.maxNodes);
-  //       console.log('Entities response:', entitiesData);
-        
-  //       if (entitiesData.status === 'success' && entitiesData.entities.length > 0) {
-  //         await buildGraphFromEntities(entitiesData.entities);
-  //       } else {
-  //         setError('No entities found. Please upload some documents first.');
-  //       }
-  //     } else {
-  //       setError(`Graph overview failed: ${data.message || 'Unknown error'}`);
-  //     }
-  //   } catch (error) {
-  //     console.error('Error loading graph overview:', error);
-  //     setError(`Failed to load graph: ${error.message}`);
-  //     setApiConnected(false);
-  //   } finally {
-  //     setIsLoading(false);
-  //   }
-  // };
+  }, [filters.maxNodes]);
 
   const buildGraphFromEntities = async (entities) => {
     console.log('Building graph from entities:', entities);
     
     if (!entities || entities.length === 0) {
       setError('No entities to display');
+      setIsLoading(false);
       return;
     }
     
@@ -450,47 +453,29 @@ const GraphVisualization = () => {
       
       if (nodes.length === 0 && edges.length === 0) {
         setError('No graph data to display. Try uploading documents with clear entity relationships.');
+      } else {
+        setError(null);
       }
       
     } catch (error) {
       console.error('Error loading relationships:', error);
       setGraphData({ nodes, edges: [] });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // const updateGraph = () => {
-  //   if (!cy) return;
+  // Load initial graph data
+  useEffect(() => {
+    loadGraphOverview();
+  }, [loadGraphOverview]);
 
-  //   console.log('Updating graph with data:', graphData);
-
-  //   // Filter nodes based on current filters
-  //   const filteredNodes = graphData.nodes.filter(node => 
-  //     filters.entityTypes.includes(node.data.type) &&
-  //     (searchTerm === '' || node.data.label.toLowerCase().includes(searchTerm.toLowerCase()))
-  //   );
-
-  //   // Filter edges to only include connections between visible nodes
-  //   const nodeIds = new Set(filteredNodes.map(n => n.data.id));
-  //   const filteredEdges = graphData.edges.filter(edge =>
-  //     nodeIds.has(edge.data.source) && 
-  //     nodeIds.has(edge.data.target) &&
-  //     edge.data.confidence >= filters.minConfidence
-  //   );
-
-  //   console.log('Filtered nodes:', filteredNodes.length);
-  //   console.log('Filtered edges:', filteredEdges.length);
-
-  //   // Update graph
-  //   cy.elements().remove();
-  //   cy.add([...filteredNodes, ...filteredEdges]);
-    
-  //   // Apply layout
-  //   cy.layout({
-  //     name: 'cose-bilkent',
-  //     animate: true,
-  //     animationDuration: 1000
-  //   }).run();
-  // };
+  // Update graph when data changes
+  useEffect(() => {
+    if (cy && graphData.nodes.length > 0) {
+      updateGraph();
+    }
+  }, [cy, graphData, updateGraph]);
 
   const handleNodeClick = async (entityName) => {
     setSelectedEntity(entityName);
@@ -548,12 +533,12 @@ const GraphVisualization = () => {
           buildGraphFromEntities(matchingEntities);
         } else {
           setError(`No entities found matching "${searchTerm}"`);
+          setIsLoading(false);
         }
       }
     } catch (error) {
       console.error('Error searching entities:', error);
       setError(`Search failed: ${error.message}`);
-    } finally {
       setIsLoading(false);
     }
   };
@@ -582,144 +567,162 @@ const GraphVisualization = () => {
         <div className="p-6 flex-1 overflow-y-auto">
           <h2 className="text-2xl font-bold mb-6 text-gray-800">Knowledge Graph</h2>
         
-        {/* Search */}
-        <div className="mb-6">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Search entities..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
-            />
-            <button
-              onClick={handleSearch}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-            >
-              <Search size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">Graph Statistics</h3>
-          <div className="space-y-1 text-sm">
-            <div>Documents: {graphStats.documents || 0}</div>
-            <div>Entities: {graphStats.entities || 0}</div>
-            <div>Relationships: {graphStats.relationships || 0}</div>
-            <div>Chunks: {graphStats.chunks || 0}</div>
-          </div>
-        </div>
-
-        {/* Filters */}
-        <div className="mb-6">
-          <h3 className="font-semibold mb-3">Filters</h3>
-          
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-2">Entity Types</label>
-            <div className="space-y-2">
-              {Object.keys(entityColors).filter(key => key !== 'default').map(type => (
-                <label key={type} className="flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={filters.entityTypes.includes(type)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setFilters(prev => ({
-                          ...prev,
-                          entityTypes: [...prev.entityTypes, type]
-                        }));
-                      } else {
-                        setFilters(prev => ({
-                          ...prev,
-                          entityTypes: prev.entityTypes.filter(t => t !== type)
-                        }));
-                      }
-                    }}
-                    className="mr-2"
-                  />
-                  <span 
-                    className="w-4 h-4 rounded mr-2"
-                    style={{ backgroundColor: entityColors[type] }}
-                  ></span>
-                  <span className="text-sm">{type}</span>
-                </label>
-              ))}
+          {/* Search */}
+          <div className="mb-6">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Search entities..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+              />
+              <button
+                onClick={handleSearch}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                <Search size={16} />
+              </button>
             </div>
           </div>
 
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-2">
-              Min Confidence: {filters.minConfidence}
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.1"
-              value={filters.minConfidence}
-              onChange={(e) => setFilters(prev => ({ ...prev, minConfidence: parseFloat(e.target.value) }))}
-              className="w-full"
-            />
+          {/* Stats */}
+          <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+            <h3 className="font-semibold mb-2">Graph Statistics</h3>
+            <div className="space-y-1 text-sm">
+              <div>Documents: {graphStats.documents || 0}</div>
+              <div>Entities: {graphStats.entities || 0}</div>
+              <div>Relationships: {graphStats.relationships || 0}</div>
+              <div>Chunks: {graphStats.chunks || 0}</div>
+            </div>
           </div>
 
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-2">
-              Max Nodes: {filters.maxNodes}
-            </label>
-            <input
-              type="range"
-              min="10"
-              max="100"
-              step="10"
-              value={filters.maxNodes}
-              onChange={(e) => setFilters(prev => ({ ...prev, maxNodes: parseInt(e.target.value) }))}
-              className="w-full"
-            />
-          </div>
-
-          <button
-            onClick={updateGraph}
-            className="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
-          >
-            <Filter className="inline mr-2" size={16} />
-            Apply Filters
-          </button>
-        </div>
-
-        {/* Controls */}
-        <div className="space-y-2">
-          <button
-            onClick={resetGraph}
-            className="w-full px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
-          >
-            <RotateCcw className="inline mr-2" size={16} />
-            Reset View
-          </button>
-          
-          <button
-            onClick={exportGraph}
-            className="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
-          >
-            <Download className="inline mr-2" size={16} />
-            Export PNG
-          </button>
-        </div>
-
-        {/* Selected Entity Info */}
-        {selectedEntity && (
-          <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-            <h3 className="font-semibold mb-2">Selected Entity</h3>
-            <div className="text-sm">
-              <div><strong>Name:</strong> {selectedEntity}</div>
-              <div className="mt-2 text-xs text-gray-600">
-                Click nodes to explore their neighborhood
+          {/* Filters */}
+          <div className="mb-6">
+            <h3 className="font-semibold mb-3">Filters</h3>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">Entity Types</label>
+              <div className="space-y-2">
+                {Object.keys(entityColors).filter(key => key !== 'default').map(type => (
+                  <label key={type} className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={filters.entityTypes.includes(type)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFilters(prev => ({
+                            ...prev,
+                            entityTypes: [...prev.entityTypes, type]
+                          }));
+                        } else {
+                          setFilters(prev => ({
+                            ...prev,
+                            entityTypes: prev.entityTypes.filter(t => t !== type)
+                          }));
+                        }
+                      }}
+                      className="mr-2"
+                    />
+                    <span 
+                      className="w-4 h-4 rounded mr-2"
+                      style={{ backgroundColor: entityColors[type] }}
+                    ></span>
+                    <span className="text-sm">{type}</span>
+                  </label>
+                ))}
               </div>
             </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">
+                Min Confidence: {filters.minConfidence}
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={filters.minConfidence}
+                onChange={(e) => setFilters(prev => ({ ...prev, minConfidence: parseFloat(e.target.value) }))}
+                className="w-full"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">
+                Max Nodes: {filters.maxNodes}
+              </label>
+              <input
+                type="range"
+                min="10"
+                max="200"
+                step="10"
+                value={filters.maxNodes}
+                onChange={(e) => setFilters(prev => ({ ...prev, maxNodes: parseInt(e.target.value) }))}
+                className="w-full"
+              />
+              <div className="text-xs text-gray-500 mt-1">
+                Higher values may impact performance
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  checked={filters.showAnimations}
+                  onChange={(e) => setFilters(prev => ({ ...prev, showAnimations: e.target.checked }))}
+                  className="mr-2"
+                />
+                <span className="text-sm">Enable Animations</span>
+              </label>
+              <div className="text-xs text-gray-500 mt-1">
+                Disable for better performance with large graphs
+              </div>
+            </div>
+
+            <button
+              onClick={updateGraph}
+              className="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+            >
+              <Filter className="inline mr-2" size={16} />
+              Apply Filters
+            </button>
           </div>
-        )}
+
+          {/* Controls */}
+          <div className="space-y-2">
+            <button
+              onClick={resetGraph}
+              className="w-full px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+            >
+              <RotateCcw className="inline mr-2" size={16} />
+              Reset View
+            </button>
+            
+            <button
+              onClick={exportGraph}
+              className="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
+            >
+              <Download className="inline mr-2" size={16} />
+              Export PNG
+            </button>
+          </div>
+
+          {/* Selected Entity Info */}
+          {selectedEntity && (
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+              <h3 className="font-semibold mb-2">Selected Entity</h3>
+              <div className="text-sm">
+                <div><strong>Name:</strong> {selectedEntity}</div>
+                <div className="mt-2 text-xs text-gray-600">
+                  Click nodes to explore their neighborhood
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -750,8 +753,12 @@ const GraphVisualization = () => {
         )}
         
         {isLoading && (
-          <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
-            <div className="text-lg">Loading graph...</div>
+          <div className="absolute inset-0 bg-white bg-opacity-90 flex flex-col items-center justify-center z-10">
+            <div className="text-lg font-semibold mb-2">Loading Knowledge Graph...</div>
+            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <div className="text-sm text-gray-600 mt-2">
+              Processing entities and relationships
+            </div>
           </div>
         )}
         
@@ -778,6 +785,17 @@ const GraphVisualization = () => {
           <div className="mt-2 text-xs text-gray-600">
             • Node size = mention frequency<br/>
             • Edge width = confidence level
+          </div>
+        </div>
+
+        {/* Graph Info Panel */}
+        <div className="absolute bottom-4 left-4 bg-white p-3 rounded-lg shadow-lg text-xs">
+          <div><strong>Nodes:</strong> {graphData.nodes.length}</div>
+          <div><strong>Edges:</strong> {graphData.edges.length}</div>
+          <div><strong>Performance:</strong> 
+            <span className={graphData.nodes.length > 100 ? 'text-red-600' : 'text-green-600'}>
+              {graphData.nodes.length > 100 ? ' High Load' : ' Optimal'}
+            </span>
           </div>
         </div>
       </div>
