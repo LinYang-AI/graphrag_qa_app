@@ -48,7 +48,7 @@ graph TB
 
 ```bash
 # 1. Clone repository
-git clone <repository-url>
+git clone https://github.com/LinYang-AI/graphrag_qa_app.git
 cd graphrag-assistant
 
 # 2. Start all services
